@@ -46,7 +46,7 @@ local log = require "lib/dtutils.log"
 local MODULE <const> = "file_cleanup"
 local DEFAULT_LOG_LEVEL <const> = log.debug
 local PS <const> = dt.configuration.running_os == "windows" and "\\" or "/"
-local LS_COMMAND <const> = dt.configuration.running_os == "windows" and "dir" or "ls"
+local HOME      =  dt.configuration.running_os == "windows" and os.getenv("USERPROFILE") or os.getenv("HOME")
 
 -- - - - - - - - - - - - - - - - - - - - - - - - 
 -- A P I  C H E C K
@@ -143,18 +143,27 @@ local function list_dir(path)
   return files
 end
 
-local function strip_xmp(name)
-  return (name:gsub("%.[xX][mM][pP]$", ""))
+local function len(table)
+   local count = 0
+   for _ in pairs(table) do 
+      count = count + 1 
+   end
+   return count
 end
 
+-- creates a table with a master list of missing files and a grouped list of filmrolls
 local function scan_film_rolls()
-  local missing_files = {}
+  local missing_items = {
+    missing_files = {},
+    missing_films = {}
+  }
 
   for _, filmroll in ipairs(dt.films) do
     if df.check_if_file_exists(filmroll.path) then
       -- get contents of path
       local files = list_dir(filmroll.path)
       local in_library = {}
+      local film_orphans = {}
 
       for _, image in ipairs(filmroll) do 
         local full_path = image.path .. PS .. image.filename
@@ -165,25 +174,43 @@ local function scan_film_rolls()
       for _, file in ipairs(files) do 
         -- if the file is an xmp, see if the corresponding image is in the library or if it's orphaned
         -- if it's an image, just check if it's in the library
-
-        -- if(file:lower():match("20261021_0026")) 
-        -- then
-        --     log.msg(log.debug, "file in library " .. tostring(in_library[file]))
-        --     log.msg(log.debug, "file " .. file)
-        --     log.msg(log.debug, "chopped " .. df.chop_filetype(file))
-        -- end
         if 
           (file:lower():match("%.xmp$") ~= nil and not in_library[df.chop_filetype(file)]) or
           (file:lower():match("%.xmp$") == nil and not in_library[file])
         then
           log.msg(log.debug, "found " .. file)
-          table.insert(missing_files, file)
+          table.insert(missing_items.missing_files, file)
+          table.insert(film_orphans, file)
         end
+      end
+      -- add orphans to the filmroll group
+      if len(film_orphans) > 0 then
+        missing_items.missing_films[filmroll.path] = film_orphans
       end
     end
   end
 
-  return missing_files
+  return missing_items
+end
+
+local function export_missing_items(missing_items)
+  local timestamp = os.date("%Y%m%d_%H%M%S")
+  local out_path = HOME .. PS .. timestamp .. "_darktable_missing_files.txt"
+
+  local f, err = io.open(out_path, "w")
+  if not f then
+    log.msg(log.error, "unable to write " .. out_path .. ": " .. tostring(err))
+    return nil
+  end
+
+  for path, orphans in pairs(missing_items.missing_films) do
+    f:write(path, "\n")
+    for _, file in ipairs(orphans) do
+      f:write("  ", file, "\n")
+    end
+  end
+  f:close()
+  return out_path
 end
 
 local function install_module()
@@ -217,23 +244,24 @@ file_cleanup.scan_button = dt.new_widget("button"){
   label = _("scan"),
   tooltip = _("click to scan for missing film rolls/files"),
   clicked_callback = function(this)
-    local found = nil
+    local missing_items = nil
     local found_text = ""
     local old_log_level = set_log_level(DEFAULT_LOG_LEVEL)
     log.msg(log.debug, "Button clicked")
     
-    found = scan_film_rolls()
-    if #found > 0 then
-      for _, file in ipairs(found) do
-        local dir_name = du.split(file, PS)
-        found_text = found_text .. dir_name[#dir_name] .. "\n"
+    missing_items = scan_film_rolls()
+    if len(missing_items.missing_files) > 0 then
+      file_cleanup.export_button.sensitive = true
+      for path, orphans in pairs(missing_items.missing_films) do
+        local dir_name = path:match("([^/\\]+)[/\\]*$")
+        found_text = found_text .. dir_name .. " (" .. #orphans .. ")\n"
+        log.msg(log.debug, dir_name .. " (" .. #orphans .. ")")
       end
-    end
-    
-    if #found > 0 then
-      log.msg(log.debug, "found " .. #found .. " missing items")
+
+      log.msg(log.debug, "found " .. #missing_items.missing_files .. " missing items")
+      log.msg(log.debug, found_text)
       file_cleanup.list_widget.text = found_text
-      file_cleanup.found = found
+      file_cleanup.found = missing_items
     else
       log.msg(log.debug, "no missing items found")
     end
@@ -244,13 +272,34 @@ file_cleanup.scan_button = dt.new_widget("button"){
   end
 }
 
+file_cleanup.export_button = dt.new_widget("button"){
+  label = _("export list"),
+  tooltip = _("click to export the list to a text file"),
+  sensitive = false,
+  clicked_callback = function(this)
+    log.msg(log.debug, "Export clicked")
+    if file_cleanup.found then
+      local out_path = export_missing_items(file_cleanup.found)
+      if out_path then
+        dt.print(string.format(_("exported list to %s"), out_path))
+      else
+        dt.print(_("unable to export list, see log"))
+      end
+    end
+    this.sensitive = false
+  end,
+  reset_callback = function(this)
+    this.sensitive = false
+  end
+}
+
 file_cleanup.main_widget = dt.new_widget("box"){
   orientation = "vertical",
   dt.new_widget("section_label"){label = _("missing items")},
   file_cleanup.list_widget,
   dt.new_widget("label"){label = ""},
   file_cleanup.scan_button,
-  -- file_cleanup.remove_button
+  file_cleanup.export_button
 }
 
 -- - - - - - - - - - - - - - - - - - - - - - - - 
