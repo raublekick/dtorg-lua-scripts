@@ -46,7 +46,7 @@ local log = require "lib/dtutils.log"
 local MODULE <const> = "file_cleanup"
 local DEFAULT_LOG_LEVEL <const> = log.debug
 local PS <const> = dt.configuration.running_os == "windows" and "\\" or "/"
-local HOME      =  dt.configuration.running_os == "windows" and os.getenv("USERPROFILE") or os.getenv("HOME")
+local HOME <const> =  dt.configuration.running_os == "windows" and os.getenv("USERPROFILE") or os.getenv("HOME")
 
 -- - - - - - - - - - - - - - - - - - - - - - - - 
 -- A P I  C H E C K
@@ -217,7 +217,7 @@ local function install_module()
   if not namespace.module_installed then
     dt.register_lib(
       MODULE,     -- Module name
-      _("File Cleanup"),     -- Visible name
+      _("file cleanup"),     -- Visible name
       true,                -- expandable
       true,               -- resetable
       {[dt.gui.views.lighttable] = {"DT_UI_CONTAINER_PANEL_LEFT_CENTER", 0}},   -- containers
