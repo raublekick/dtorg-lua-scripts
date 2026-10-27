@@ -28,7 +28,7 @@
     USAGE
     * start file cleanup from script_manager
     * scan for files that are missing from the library
-    * look at the results and choose to delete or not
+    * export the list to a text file
 
     CHANGES
 ]]
@@ -193,9 +193,9 @@ local function scan_film_rolls()
   return missing_items
 end
 
-local function export_missing_items(missing_items)
+local function export_missing_items(missing_items, export_dir)
   local timestamp = os.date("%Y%m%d_%H%M%S")
-  local out_path = HOME .. PS .. timestamp .. "_darktable_missing_files.txt"
+  local out_path = export_dir .. PS .. timestamp .. "_darktable_missing_files.txt"
 
   local f, err = io.open(out_path, "w")
   if not f then
@@ -272,14 +272,25 @@ file_cleanup.scan_button = dt.new_widget("button"){
   end
 }
 
+file_cleanup.export_file_chooser = dt.new_widget("file_chooser_button"){
+    title = _("choose the export location"),
+    value = HOME,
+    is_directory = true
+}
+
 file_cleanup.export_button = dt.new_widget("button"){
   label = _("export list"),
   tooltip = _("click to export the list to a text file"),
   sensitive = false,
   clicked_callback = function(this)
     log.msg(log.debug, "Export clicked")
+    local export_dir = file_cleanup.export_file_chooser.value
+    if not export_dir or export_dir == "" then
+      dt.print(_("please choose an export location"))
+      return
+    end
     if file_cleanup.found then
-      local out_path = export_missing_items(file_cleanup.found)
+      local out_path = export_missing_items(file_cleanup.found, export_dir)
       if out_path then
         dt.print(string.format(_("exported list to %s"), out_path))
       else
@@ -299,6 +310,7 @@ file_cleanup.main_widget = dt.new_widget("box"){
   file_cleanup.list_widget,
   dt.new_widget("label"){label = ""},
   file_cleanup.scan_button,
+  file_cleanup.export_file_chooser,
   file_cleanup.export_button
 }
 
