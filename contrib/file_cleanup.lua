@@ -193,24 +193,67 @@ local function scan_film_rolls()
   return missing_items
 end
 
-local function export_missing_items(missing_items, export_dir)
-  local timestamp = os.date("%Y%m%d_%H%M%S")
-  local out_path = export_dir .. PS .. timestamp .. "_darktable_missing_files.txt"
+local function verify_directory_exists(export_dir)
+  if not export_dir or export_dir == "" then
+    dt.print(_("please choose an export location"))
+    return
+  end
 
-  local f, err = io.open(out_path, "w")
-  if not f then
-    log.msg(log.error, "unable to write " .. out_path .. ": " .. tostring(err))
+  if not df.check_if_file_exists(export_dir) then
+    log.msg(log.error, "unable to write " .. export_dir .. ": " .. tostring(err))
     return nil
   end
+end
 
-  for path, orphans in pairs(missing_items.missing_films) do
-    f:write(path, "\n")
-    for _, file in ipairs(orphans) do
-      f:write("  ", file, "\n")
+-- creates a text file listing the paths of files found
+local function export_missing_items(missing_items, export_dir)
+  verify_directory_exists(export_dir)
+
+  if missing_items then
+    local timestamp = os.date("%Y%m%d_%H%M%S")
+    local out_path = export_dir .. PS .. timestamp .. "_darktable_missing_files.txt"
+
+    local f, err = io.open(out_path, "w")
+    if not f then
+      log.msg(log.error, "unable to write " .. out_path .. ": " .. tostring(err))
+      return nil
+    end
+
+    for path, orphans in pairs(missing_items.missing_films) do
+      f:write("# filmstrip " .. path, "\n")
+      for _, file in ipairs(orphans) do
+        f:write(file, "\n")
+      end
+    end
+    f:close()
+
+    dt.print(string.format(_("exported list to %s"), out_path))
+  end
+
+  return true
+end
+
+-- copies the files to the export directory
+local function copy_items(missing_items, export_dir)
+  verify_directory_exists(export_dir)
+
+  if missing_items then
+    local total_orphans = #missing_items
+
+    for index, file in ipairs(missing_items) do
+      -- copy the files
+      df.file_copy(file, export_dir)
+      dt.print("file copied: " .. index .. " / " .. total_orphans)
     end
   end
-  f:close()
-  return out_path
+
+  return true
+end
+
+-- toggles the sensitive state of buttons to keep them in sync easily
+local function toggle_buttons(toggle)
+  file_cleanup.archive_button.sensitive = toggle
+  file_cleanup.export_button.sensitive = toggle
 end
 
 local function install_module()
@@ -251,7 +294,7 @@ file_cleanup.scan_button = dt.new_widget("button"){
     
     missing_items = scan_film_rolls()
     if len(missing_items.missing_files) > 0 then
-      file_cleanup.export_button.sensitive = true
+      toggle_buttons(true)
       for path, orphans in pairs(missing_items.missing_films) do
         local dir_name = path:match("([^/\\]+)[/\\]*$")
         found_text = found_text .. dir_name .. " (" .. #orphans .. ")\n"
@@ -284,23 +327,26 @@ file_cleanup.export_button = dt.new_widget("button"){
   sensitive = false,
   clicked_callback = function(this)
     log.msg(log.debug, "Export clicked")
-    local export_dir = file_cleanup.export_file_chooser.value
-    if not export_dir or export_dir == "" then
-      dt.print(_("please choose an export location"))
-      return
-    end
-    if file_cleanup.found then
-      local out_path = export_missing_items(file_cleanup.found, export_dir)
-      if out_path then
-        dt.print(string.format(_("exported list to %s"), out_path))
-      else
-        dt.print(_("unable to export list, see log"))
-      end
-    end
-    this.sensitive = false
+
+    export_missing_items(file_cleanup.found, file_cleanup.export_file_chooser.value)
   end,
   reset_callback = function(this)
-    this.sensitive = false
+    toggle_buttons(false)
+  end
+}
+
+file_cleanup.archive_button = dt.new_widget("button"){
+  label = _("move files"),
+  tooltip = _("click to copy all files to the selected export location"),
+  sensitive = false,
+  clicked_callback = function(this)
+    log.msg(log.debug, "Move clicked")
+    
+    export_missing_items(file_cleanup.found, file_cleanup.export_file_chooser.value)
+    copy_items(file_cleanup.found.missing_files, file_cleanup.export_file_chooser.value)
+  end,
+  reset_callback = function(this)
+    toggle_buttons(false)
   end
 }
 
@@ -311,7 +357,8 @@ file_cleanup.main_widget = dt.new_widget("box"){
   dt.new_widget("label"){label = ""},
   file_cleanup.scan_button,
   file_cleanup.export_file_chooser,
-  file_cleanup.export_button
+  file_cleanup.export_button,
+  file_cleanup.archive_button
 }
 
 -- - - - - - - - - - - - - - - - - - - - - - - - 
