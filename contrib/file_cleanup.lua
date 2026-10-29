@@ -29,6 +29,8 @@
     * start file cleanup from script_manager
     * scan for files that are missing from the library
     * export the list to a text file
+    * copy / move the files to the export location
+    * delete files from the origin
 
     CHANGES
 ]]
@@ -178,7 +180,7 @@ local function scan_film_rolls()
           (file:lower():match("%.xmp$") ~= nil and not in_library[df.chop_filetype(file)]) or
           (file:lower():match("%.xmp$") == nil and not in_library[file])
         then
-          log.msg(log.debug, "found " .. file)
+          -- log.msg(log.debug, "found " .. file)
           table.insert(missing_items.missing_files, file)
           table.insert(film_orphans, file)
         end
@@ -208,7 +210,7 @@ end
 -- creates a text file listing the paths of files found
 local function export_missing_items(missing_items, export_dir)
   verify_directory_exists(export_dir)
-
+  
   if missing_items then
     local timestamp = os.date("%Y%m%d_%H%M%S")
     local out_path = export_dir .. PS .. timestamp .. "_darktable_missing_files.txt"
@@ -233,8 +235,50 @@ local function export_missing_items(missing_items, export_dir)
   return true
 end
 
+-- creates a text file listing the paths of files found
+local function export_revert_script(missing_items, export_dir)
+
+  log.msg(log.debug, "writing revert script")
+  verify_directory_exists(export_dir)
+
+  local script_cmd = 'cp'
+  local script_file_type = ".sh"
+  local script_prepend = "#!/bin/bash"
+  if dt.configuration.running_os == "windows" then
+    script_cmd = 'copy' 
+    script_file_type = ".ps1"
+    script_prepend = ""
+  end
+  
+  if missing_items then
+    local timestamp = os.date("%Y%m%d_%H%M%S")
+    local out_path = export_dir .. PS .. timestamp .. "_darktable_revert_archive" .. script_file_type
+
+    local f, err = io.open(out_path, "w")
+    if not f then
+      log.msg(log.error, "unable to write " .. out_path .. ": " .. tostring(err))
+      return nil
+    end
+
+    f:write(script_prepend, "\n")
+
+    for path, orphans in pairs(missing_items.missing_films) do
+      f:write("# filmstrip " .. path, "\n")
+      for _, file in ipairs(orphans) do
+        f:write(script_cmd .. " " .. export_dir .. "/".. df.get_filename(file) .. " " .. file, "\n")
+        log.msg(log.debug, script_cmd .. " " .. export_dir .. "/".. df.get_filename(file) .. " " .. file, "\n")
+      end
+    end
+    f:close()
+
+    dt.print(string.format(_("exported revert script to %s"), out_path))
+  end
+
+  return true
+end
+
 -- copies the files to the export directory
-local function copy_items(missing_items, export_dir)
+local function archive_items(missing_items, export_dir, mode)
   verify_directory_exists(export_dir)
 
   if missing_items then
@@ -242,7 +286,12 @@ local function copy_items(missing_items, export_dir)
 
     for index, file in ipairs(missing_items) do
       -- copy the files
-      df.file_copy(file, export_dir)
+      if mode == "move" then
+        df.file_move(file, export_dir)  
+      else
+        df.file_copy(file, export_dir)  
+      end
+      
       dt.print("file copied: " .. index .. " / " .. total_orphans)
     end
   end
@@ -252,8 +301,9 @@ end
 
 -- toggles the sensitive state of buttons to keep them in sync easily
 local function toggle_buttons(toggle)
-  file_cleanup.archive_button.sensitive = toggle
+  file_cleanup.copy_button.sensitive = toggle
   file_cleanup.export_button.sensitive = toggle
+  file_cleanup.move_button.sensitive = toggle
 end
 
 local function install_module()
@@ -290,7 +340,7 @@ file_cleanup.scan_button = dt.new_widget("button"){
     local missing_items = nil
     local found_text = ""
     local old_log_level = set_log_level(DEFAULT_LOG_LEVEL)
-    log.msg(log.debug, "Button clicked")
+    log.msg(log.debug, "Scan clicked")
     
     missing_items = scan_film_rolls()
     if len(missing_items.missing_files) > 0 then
@@ -298,11 +348,11 @@ file_cleanup.scan_button = dt.new_widget("button"){
       for path, orphans in pairs(missing_items.missing_films) do
         local dir_name = path:match("([^/\\]+)[/\\]*$")
         found_text = found_text .. dir_name .. " (" .. #orphans .. ")\n"
-        log.msg(log.debug, dir_name .. " (" .. #orphans .. ")")
+        -- log.msg(log.debug, dir_name .. " (" .. #orphans .. ")")
       end
 
       log.msg(log.debug, "found " .. #missing_items.missing_files .. " missing items")
-      log.msg(log.debug, found_text)
+      -- log.msg(log.debug, found_text)
       file_cleanup.list_widget.text = found_text
       file_cleanup.found = missing_items
     else
@@ -326,24 +376,48 @@ file_cleanup.export_button = dt.new_widget("button"){
   tooltip = _("click to export the list to a text file"),
   sensitive = false,
   clicked_callback = function(this)
+    local old_log_level = set_log_level(DEFAULT_LOG_LEVEL)
     log.msg(log.debug, "Export clicked")
-
     export_missing_items(file_cleanup.found, file_cleanup.export_file_chooser.value)
+    restore_log_level(old_log_level)
   end,
   reset_callback = function(this)
     toggle_buttons(false)
   end
 }
 
-file_cleanup.archive_button = dt.new_widget("button"){
+file_cleanup.copy_button = dt.new_widget("button"){
+  label = _("copy files"),
+  tooltip = _("click to copy all files to the selected export location"),
+  sensitive = false,
+  clicked_callback = function(this)
+    local old_log_level = set_log_level(DEFAULT_LOG_LEVEL)
+
+    log.msg(log.debug, "Copy clicked")
+    
+    export_missing_items(file_cleanup.found, file_cleanup.export_file_chooser.value)
+    log.msg(log.debug, "revert script")
+    export_revert_script(file_cleanup.found, file_cleanup.export_file_chooser.value)
+    archive_items(file_cleanup.found.missing_files, file_cleanup.export_file_chooser.value, "copy")
+    restore_log_level(old_log_level)
+  end,
+  reset_callback = function(this)
+    toggle_buttons(false)
+  end
+}
+
+file_cleanup.move_button = dt.new_widget("button"){
   label = _("move files"),
   tooltip = _("click to copy all files to the selected export location"),
   sensitive = false,
   clicked_callback = function(this)
+    local old_log_level = set_log_level(DEFAULT_LOG_LEVEL)
     log.msg(log.debug, "Move clicked")
     
     export_missing_items(file_cleanup.found, file_cleanup.export_file_chooser.value)
-    copy_items(file_cleanup.found.missing_files, file_cleanup.export_file_chooser.value)
+    export_revert_script(file_cleanup.found, file_cleanup.export_file_chooser.value)
+    archive_items(file_cleanup.found.missing_files, file_cleanup.export_file_chooser.value, "move")
+    restore_log_level(old_log_level)
   end,
   reset_callback = function(this)
     toggle_buttons(false)
@@ -358,7 +432,8 @@ file_cleanup.main_widget = dt.new_widget("box"){
   file_cleanup.scan_button,
   file_cleanup.export_file_chooser,
   file_cleanup.export_button,
-  file_cleanup.archive_button
+  file_cleanup.copy_button,
+  file_cleanup.move_button
 }
 
 -- - - - - - - - - - - - - - - - - - - - - - - - 
